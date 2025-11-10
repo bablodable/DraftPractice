@@ -11,6 +11,7 @@ import (
 // RouterConfig bundles dependencies required for building the HTTP router.
 type RouterConfig struct {
 	DraftService *draft.Service
+	HeroSource   heroes.Source
 }
 
 // NewHandler constructs an http.Handler that exposes the public API for the simulator.
@@ -27,7 +28,18 @@ func NewHandler(cfg RouterConfig) http.Handler {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, heroes.List())
+		if cfg.HeroSource == nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hero source not configured"})
+			return
+		}
+
+		heroes, err := cfg.HeroSource.List(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, heroes)
 	})
 
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +63,12 @@ func NewHandler(cfg RouterConfig) http.Handler {
 			return
 		}
 
-		session := cfg.DraftService.CreateSession(req.Radiant, req.Dire)
+		session, err := cfg.DraftService.CreateSession(r.Context(), req.Radiant, req.Dire)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+
 		writeJSON(w, http.StatusCreated, session)
 	})
 

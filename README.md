@@ -8,7 +8,7 @@
 /backend
   /cmd/draft-api        # исполняемый HTTP-сервис
   /internal/draft       # доменные сущности и сервис управления сессиями
-  /internal/heroes      # статический список героев (заглушка)
+/internal/heroes      # каталог героев и интеграция с OpenDota
   /internal/server      # HTTP-слой
 ```
 
@@ -22,7 +22,7 @@ go run ./cmd/draft-api
 Сервис стартует на `http://localhost:8080` и предоставляет первые эндпоинты:
 
 - `GET /health` — проверка состояния.
-- `GET /api/heroes` — список доступных героев (пока заглушка).
+- `GET /api/heroes` — список актуальных героев (подтягивается из OpenDota и кешируется).
 - `POST /api/sessions` — создание новой сессии драфта. Пример тела:
   ```json
   {

@@ -3,16 +3,20 @@ package main
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/example/draftpractice/internal/draft"
+	"github.com/example/draftpractice/internal/heroes"
 	"github.com/example/draftpractice/internal/server"
 )
 
 func main() {
-	draftService := draft.NewService()
+	heroCatalog := heroes.NewCatalog(nil, "", 30*time.Minute)
+	draftService := draft.NewService(heroCatalog)
 
 	handler := server.NewHandler(server.RouterConfig{
 		DraftService: draftService,
+		HeroSource:   heroCatalog,
 	})
 
 	if err := http.ListenAndServe(":8080", handler); err != nil {

@@ -1,6 +1,7 @@
 package draft
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -13,19 +14,26 @@ import (
 // Service coordinates draft sessions in-memory. It will be replaced by a persistent
 // implementation once storage is wired in.
 type Service struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
+	mu         sync.RWMutex
+	sessions   map[string]*Session
+	heroSource heroes.Source
 }
 
 // NewService constructs a Service with an empty session registry.
-func NewService() *Service {
+func NewService(heroSource heroes.Source) *Service {
 	return &Service{
-		sessions: make(map[string]*Session),
+		sessions:   make(map[string]*Session),
+		heroSource: heroSource,
 	}
 }
 
 // CreateSession instantiates a new draft session with default parameters.
-func (s *Service) CreateSession(radiantName, direName string) *Session {
+func (s *Service) CreateSession(ctx context.Context, radiantName, direName string) (*Session, error) {
+	pool, err := s.buildHeroPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	id := generateID()
 	now := time.Now().UTC()
 
@@ -47,14 +55,14 @@ func (s *Service) CreateSession(radiantName, direName string) *Session {
 		IsCompleted:   false,
 		LastAction:    "",
 		NextActor:     "radiant",
-		AvailablePool: buildHeroPool(),
+		AvailablePool: pool,
 	}
 
 	s.mu.Lock()
 	s.sessions[id] = session
 	s.mu.Unlock()
 
-	return session
+	return session, nil
 }
 
 // GetSession retrieves a session by identifier.
@@ -70,13 +78,21 @@ func (s *Service) GetSession(id string) (*Session, error) {
 	return session, nil
 }
 
-func buildHeroPool() []string {
-	list := heroes.List()
+func (s *Service) buildHeroPool(ctx context.Context) ([]string, error) {
+	if s.heroSource == nil {
+		return nil, errors.New("hero source is not configured")
+	}
+
+	list, err := s.heroSource.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	pool := make([]string, 0, len(list))
 	for _, hero := range list {
 		pool = append(pool, hero.ID)
 	}
-	return pool
+	return pool, nil
 }
 
 func generateID() string {
