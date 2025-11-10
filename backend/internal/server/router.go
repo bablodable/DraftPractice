@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/example/draftpractice/internal/draft"
 	"github.com/example/draftpractice/internal/heroes"
@@ -10,7 +11,7 @@ import (
 
 // RouterConfig bundles dependencies required for building the HTTP router.
 type RouterConfig struct {
-	DraftService *draft.Service
+	DraftStore *draft.Store
 }
 
 // NewHandler constructs an http.Handler that exposes the public API for the simulator.
@@ -51,7 +52,7 @@ func NewHandler(cfg RouterConfig) http.Handler {
 			return
 		}
 
-		session, err := cfg.DraftService.CreateSession(r.Context(), req.Radiant, req.Dire)
+		session, err := cfg.DraftStore.CreateSession(r.Context(), req.Radiant, req.Dire)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			return
@@ -61,24 +62,67 @@ func NewHandler(cfg RouterConfig) http.Handler {
 	})
 
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		trimmed := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+		if trimmed == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
 			return
 		}
 
-		id := r.URL.Path[len("/api/sessions/"):]
+		if strings.HasSuffix(trimmed, "/") {
+			trimmed = strings.TrimSuffix(trimmed, "/")
+		}
+
+		parts := strings.Split(trimmed, "/")
+		id := parts[0]
 		if id == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
 			return
 		}
 
-		session, err := cfg.DraftService.GetSession(id)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		if len(parts) == 1 {
+			if r.Method != http.MethodGet {
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+
+			session, err := cfg.DraftStore.GetSession(id)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+
+			writeJSON(w, http.StatusOK, session)
 			return
 		}
 
-		writeJSON(w, http.StatusOK, session)
+		if len(parts) == 2 && parts[1] == "action" {
+			if r.Method != http.MethodPost {
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+
+			var req struct {
+				Type   string `json:"type"`
+				HeroID int    `json:"heroId"`
+			}
+
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payload"})
+				return
+			}
+
+			actionType := draft.Phase(req.Type)
+			session, err := cfg.DraftStore.ApplyAction(id, actionType, req.HeroID)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+
+			writeJSON(w, http.StatusOK, session)
+			return
+		}
+
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown resource"})
 	})
 
 	return mux

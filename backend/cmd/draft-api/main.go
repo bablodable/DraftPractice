@@ -14,10 +14,10 @@ func main() {
 		log.Fatalf("failed to load heroes: %v", err)
 	}
 
-	draftService := draft.NewService()
+	draftStore := draft.NewStore()
 
 	handler := server.NewHandler(server.RouterConfig{
-		DraftService: draftService,
+		DraftStore: draftStore,
 	})
 
 	if err := http.ListenAndServe(":8080", handler); err != nil {
