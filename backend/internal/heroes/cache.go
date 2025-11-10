@@ -3,6 +3,7 @@ package heroes
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ func refresher() {
 	for range ticker.C {
 		heroes, err := fetch()
 		if err != nil {
+			log.Printf("heroes: refresher failed to pull hero stats: %v", err)
 			continue
 		}
 
