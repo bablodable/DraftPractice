@@ -12,22 +12,20 @@ import (
 	"github.com/example/draftpractice/internal/heroes"
 )
 
-// Store хранит активные сессии и ссылку на используемого бота.
+// Store хранит сессии в памяти.
 type Store struct {
 	mu       sync.RWMutex
 	sessions map[string]*DraftSession
-	bot      Bot
 }
 
-// NewStore создаёт хранилище драфтов с базовым ботом.
+// NewStore создаёт новый Store.
 func NewStore() *Store {
 	return &Store{
 		sessions: make(map[string]*DraftSession),
-		bot:      RandomBot{}, // пока просто случайный выбор
 	}
 }
 
-// CreateSession — создаёт новую сессию.
+// CreateSession создаёт новую сессию и запускает таймер.
 func (s *Store) CreateSession(ctx context.Context, radiantName, direName string) (*DraftSession, error) {
 	if len(heroes.All()) == 0 {
 		return nil, errors.New("hero cache is empty")
@@ -40,87 +38,130 @@ func (s *Store) CreateSession(ctx context.Context, radiantName, direName string)
 	s.sessions[id] = session
 	s.mu.Unlock()
 
-	clone := session.Clone()
-	return &clone, nil
+	fmt.Printf("[SESSION] New draft %s started: %s vs %s\n", id, radiantName, direName)
+	fmt.Printf("[SESSION] First move: %s %s (timer %d sec)\n", session.Side, session.Stage, session.CurrentTimer)
+
+	// Запускаем фонового тикера для этой сессии.
+	go s.runTimer(session)
+
+	return session.ClonePtr(), nil
 }
 
-// GetSession — возвращает сессию по ID.
+// runTimer — отслеживает время хода и делает автоход при истечении.
+func (s *Store) runTimer(session *DraftSession) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.mu.Lock()
+
+		if session.Completed {
+			s.mu.Unlock()
+			fmt.Printf("[SESSION] Draft %s completed.\n", session.ID)
+			return
+		}
+
+		session.CurrentTimer--
+
+		if session.CurrentTimer%5 == 0 || session.CurrentTimer < 5 {
+			fmt.Printf("[TIMER] %s %s: %d sec left (reserve R:%ds / D:%ds)\n",
+				session.Side, session.Stage,
+				session.CurrentTimer,
+				session.ReserveRadiant, session.ReserveDire)
+		}
+
+		if session.CurrentTimer <= 0 {
+			var reserve *int
+			if session.Side == SideRadiant {
+				reserve = &session.ReserveRadiant
+			} else {
+				reserve = &session.ReserveDire
+			}
+
+			if *reserve > 0 {
+				*reserve--
+				session.CurrentTimer = 1 // дышим секунду и продолжаем
+			} else {
+				// резерв закончился — автопик или автобан
+				autoHero := randomAvailableHero(session)
+				fmt.Printf("[AUTO] %s auto-%s hero %d (no time left)\n",
+					session.Side, session.Stage, autoHero)
+
+				_ = session.ApplyAction(autoHero)
+				fmt.Printf("[NEXT] Now %s %s (timer %d sec)\n",
+					session.Side, session.Stage, session.CurrentTimer)
+			}
+		}
+
+		s.mu.Unlock()
+	}
+}
+
+func randomAvailableHero(s *DraftSession) int {
+	for _, h := range heroes.All() {
+		if !s.IsHeroUsed(h.ID) {
+			return h.ID
+		}
+	}
+	return 1 // fallback
+}
+
+// GetSession возвращает состояние сессии.
 func (s *Store) GetSession(id string) (*DraftSession, error) {
 	s.mu.RLock()
-	session, ok := s.sessions[id]
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 
+	session, ok := s.sessions[id]
 	if !ok {
 		return nil, errors.New("session not found")
 	}
-
 	clone := session.Clone()
 	return &clone, nil
 }
 
-// ApplyAction — применяет действие игрока и, если нужно, вызывает бота.
+// ApplyAction — применяет действие и двигает сессию.
 func (s *Store) ApplyAction(id string, actionType Phase, heroID int) (*DraftSession, error) {
 	if actionType != PhaseBan && actionType != PhasePick {
 		return nil, fmt.Errorf("unsupported action type %q", actionType)
 	}
 
-	if heroID <= 0 {
-		return nil, errors.New("hero id must be positive")
-	}
-
-	if !heroExists(heroID) {
-		return nil, fmt.Errorf("unknown hero id %d", heroID)
-	}
-
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	session, ok := s.sessions[id]
 	if !ok {
-		s.mu.Unlock()
 		return nil, errors.New("session not found")
 	}
 
 	if session.Completed {
-		s.mu.Unlock()
 		return nil, errors.New("draft is already completed")
 	}
 
 	if session.Stage != actionType {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("expected %s action but received %s", session.Stage, actionType)
+		return nil, fmt.Errorf("expected %s action but got %s", session.Stage, actionType)
 	}
 
 	if err := session.ApplyAction(heroID); err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
 
-	// Когда очередь Dire — бот делает ход
-	if session.Side == "dire" && !session.Completed {
-		botHero := s.bot.ChooseHero(session)
-		if botHero > 0 {
-			_ = session.ApplyAction(botHero)
-		}
-	}
+	fmt.Printf("[ACTION] %s %s hero %d\n", session.Side, session.Stage, heroID)
+	fmt.Printf("[NEXT] Now %s %s (timer %d sec)\n",
+		session.Side, session.Stage, session.CurrentTimer)
 
-	clone := session.Clone()
-	s.mu.Unlock()
-	return &clone, nil
+	return session.ClonePtr(), nil
 }
 
-func heroExists(id int) bool {
-	heroesList := heroes.All()
-	for _, hero := range heroesList {
-		if hero.ID == id || hero.HeroID == id {
-			return true
-		}
-	}
-	return false
+// ClonePtr — удобный способ вернуть указатель на клон.
+func (s *DraftSession) ClonePtr() *DraftSession {
+	clone := s.Clone()
+	return &clone
 }
 
 func generateID() string {
-	buf := make([]byte, 16)
+	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
-		return hex.EncodeToString([]byte(time.Now().Format("20060102150405")))
+		return hex.EncodeToString([]byte(fmt.Sprint(time.Now().UnixNano())))
 	}
 	return hex.EncodeToString(buf)
 }

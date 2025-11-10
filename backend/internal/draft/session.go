@@ -2,7 +2,7 @@ package draft
 
 import "fmt"
 
-// Phase represents the current action category within the draft.
+// Phase — категория текущего действия в драфте.
 type Phase string
 
 const (
@@ -10,66 +10,51 @@ const (
 	PhasePick Phase = "pick"
 )
 
-// Side identifies which team is expected to act.
-type Side string
-
-const (
-	SideRadiant Side = "radiant"
-	SideDire    Side = "dire"
-)
-
-// DraftTeam keeps track of bans and picks for one side of the draft.
-type DraftTeam struct {
+// Team — состав команды (баны и пики).
+type Team struct {
 	Name  string `json:"name"`
 	Bans  []int  `json:"bans"`
 	Picks []int  `json:"picks"`
 }
 
-// DraftSession stores the state of an ongoing or finished Captains Mode draft.
+// DraftSession — состояние одной сессии драфта.
 type DraftSession struct {
-	ID        string    `json:"id"`
-	Stage     Phase     `json:"stage"`
-	Side      Side      `json:"side"`
-	Radiant   DraftTeam `json:"radiant"`
-	Dire      DraftTeam `json:"dire"`
-	Completed bool      `json:"completed"`
+	ID        string
+	Radiant   Team
+	Dire      Team
+	Stage     Phase
+	Side      Side
+	Completed bool
+	Step      int
+	Order     []Turn
 
-	stageIndex int
-	taken      map[int]struct{}
+	// Таймеры и резервы
+	CurrentTimer   int
+	ReserveRadiant int
+	ReserveDire    int
+	taken          map[int]struct{}
 }
 
-// TODO: replace this prototype schedule with the full Captains Mode sequence.
-var turnSchedule = []Phase{
-	PhaseBan,
-	PhaseBan,
-	PhaseBan,
-	PhaseBan,
-	PhasePick,
-	PhasePick,
-	PhasePick,
-	PhasePick,
-}
-
+// newDraftSession — инициализация новой сессии.
 func newDraftSession(id, radiantName, direName string) *DraftSession {
-	return &DraftSession{
-		ID:    id,
-		Stage: turnSchedule[0],
-		Side:  SideRadiant,
-		Radiant: DraftTeam{
-			Name:  radiantName,
-			Bans:  make([]int, 0, 4),
-			Picks: make([]int, 0, 4),
-		},
-		Dire: DraftTeam{
-			Name:  direName,
-			Bans:  make([]int, 0, 4),
-			Picks: make([]int, 0, 4),
-		},
-		taken: make(map[int]struct{}),
+	s := &DraftSession{
+		ID:             id,
+		Radiant:        Team{Name: radiantName},
+		Dire:           Team{Name: direName},
+		Order:          schedule(SideRadiant), // допустим Radiant имеет первый пик
+		Step:           0,
+		ReserveRadiant: ReserveTimeSeconds,
+		ReserveDire:    ReserveTimeSeconds,
+		taken:          make(map[int]struct{}),
 	}
+
+	s.Stage = s.Order[0].Phase
+	s.Side = s.Order[0].Side
+	s.CurrentTimer = s.Order[0].Timer
+	return s
 }
 
-// ApplyAction records the hero for the active team and advances the session.
+// ApplyAction — записывает героя для текущей стороны и двигает драфт вперёд.
 func (s *DraftSession) ApplyAction(heroID int) error {
 	if s.Completed {
 		return fmt.Errorf("draft already completed")
@@ -78,7 +63,6 @@ func (s *DraftSession) ApplyAction(heroID int) error {
 	if heroID <= 0 {
 		return fmt.Errorf("invalid hero id %d", heroID)
 	}
-
 	if _, exists := s.taken[heroID]; exists {
 		return fmt.Errorf("hero %d already selected", heroID)
 	}
@@ -94,66 +78,32 @@ func (s *DraftSession) ApplyAction(heroID int) error {
 	}
 
 	s.taken[heroID] = struct{}{}
-	s.advance()
+	s.NextStep()
 	return nil
 }
 
-// Clone creates a deep copy that can be safely shared with callers.
-func (s *DraftSession) Clone() DraftSession {
-	copySession := DraftSession{
-		ID:         s.ID,
-		Stage:      s.Stage,
-		Side:       s.Side,
-		Completed:  s.Completed,
-		stageIndex: s.stageIndex,
-		taken:      make(map[int]struct{}, len(s.taken)),
+// NextStep — переход к следующему действию.
+func (s *DraftSession) NextStep() {
+	s.Step++
+	if s.Step >= len(s.Order) {
+		s.Completed = true
+		return
 	}
-
-	for heroID := range s.taken {
-		copySession.taken[heroID] = struct{}{}
-	}
-
-	copySession.Radiant = DraftTeam{
-		Name:  s.Radiant.Name,
-		Bans:  append([]int(nil), s.Radiant.Bans...),
-		Picks: append([]int(nil), s.Radiant.Picks...),
-	}
-
-	copySession.Dire = DraftTeam{
-		Name:  s.Dire.Name,
-		Bans:  append([]int(nil), s.Dire.Bans...),
-		Picks: append([]int(nil), s.Dire.Picks...),
-	}
-
-	return copySession
+	next := s.Order[s.Step]
+	s.Stage = next.Phase
+	s.Side = next.Side
+	s.CurrentTimer = next.Timer
 }
 
-func (s *DraftSession) activeTeam() *DraftTeam {
+// activeTeam — возвращает команду, которая сейчас ходит.
+func (s *DraftSession) activeTeam() *Team {
 	if s.Side == SideRadiant {
 		return &s.Radiant
 	}
 	return &s.Dire
 }
 
-func (s *DraftSession) advance() {
-	s.stageIndex++
-	if s.Side == SideRadiant {
-		s.Side = SideDire
-	} else {
-		s.Side = SideRadiant
-	}
-
-	if s.stageIndex >= len(turnSchedule) {
-		s.Stage = ""
-		s.Completed = true
-		return
-	}
-
-	s.Stage = turnSchedule[s.stageIndex]
-}
-
-// IsHeroUsed проверяет, использовался ли герой в драфте
-// (в банах или пиках любой команды).
+// IsHeroUsed — проверяет, использовался ли герой.
 func (s *DraftSession) IsHeroUsed(heroID int) bool {
 	for _, h := range s.Radiant.Bans {
 		if h == heroID {
@@ -176,4 +126,34 @@ func (s *DraftSession) IsHeroUsed(heroID int) bool {
 		}
 	}
 	return false
+}
+
+// Clone — делает глубокую копию сессии.
+func (s *DraftSession) Clone() DraftSession {
+	copySession := DraftSession{
+		ID:             s.ID,
+		Stage:          s.Stage,
+		Side:           s.Side,
+		Completed:      s.Completed,
+		Step:           s.Step,
+		Order:          append([]Turn(nil), s.Order...),
+		CurrentTimer:   s.CurrentTimer,
+		ReserveRadiant: s.ReserveRadiant,
+		ReserveDire:    s.ReserveDire,
+		taken:          make(map[int]struct{}, len(s.taken)),
+	}
+	for heroID := range s.taken {
+		copySession.taken[heroID] = struct{}{}
+	}
+	copySession.Radiant = Team{
+		Name:  s.Radiant.Name,
+		Bans:  append([]int(nil), s.Radiant.Bans...),
+		Picks: append([]int(nil), s.Radiant.Picks...),
+	}
+	copySession.Dire = Team{
+		Name:  s.Dire.Name,
+		Bans:  append([]int(nil), s.Dire.Bans...),
+		Picks: append([]int(nil), s.Dire.Picks...),
+	}
+	return copySession
 }
