@@ -151,3 +151,29 @@ func (s *DraftSession) advance() {
 
 	s.Stage = turnSchedule[s.stageIndex]
 }
+
+// IsHeroUsed проверяет, использовался ли герой в драфте
+// (в банах или пиках любой команды).
+func (s *DraftSession) IsHeroUsed(heroID int) bool {
+	for _, h := range s.Radiant.Bans {
+		if h == heroID {
+			return true
+		}
+	}
+	for _, h := range s.Dire.Bans {
+		if h == heroID {
+			return true
+		}
+	}
+	for _, h := range s.Radiant.Picks {
+		if h == heroID {
+			return true
+		}
+	}
+	for _, h := range s.Dire.Picks {
+		if h == heroID {
+			return true
+		}
+	}
+	return false
+}

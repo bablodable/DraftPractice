@@ -12,20 +12,22 @@ import (
 	"github.com/example/draftpractice/internal/heroes"
 )
 
-// Store keeps draft sessions in memory until a persistent backend is wired in.
+// Store хранит активные сессии и ссылку на используемого бота.
 type Store struct {
 	mu       sync.RWMutex
 	sessions map[string]*DraftSession
+	bot      Bot
 }
 
-// NewStore constructs a Store with an empty session registry.
+// NewStore создаёт хранилище драфтов с базовым ботом.
 func NewStore() *Store {
 	return &Store{
 		sessions: make(map[string]*DraftSession),
+		bot:      RandomBot{}, // пока просто случайный выбор
 	}
 }
 
-// CreateSession instantiates a new draft session with default parameters.
+// CreateSession — создаёт новую сессию.
 func (s *Store) CreateSession(ctx context.Context, radiantName, direName string) (*DraftSession, error) {
 	if len(heroes.All()) == 0 {
 		return nil, errors.New("hero cache is empty")
@@ -42,7 +44,7 @@ func (s *Store) CreateSession(ctx context.Context, radiantName, direName string)
 	return &clone, nil
 }
 
-// GetSession retrieves a session by identifier.
+// GetSession — возвращает сессию по ID.
 func (s *Store) GetSession(id string) (*DraftSession, error) {
 	s.mu.RLock()
 	session, ok := s.sessions[id]
@@ -56,8 +58,7 @@ func (s *Store) GetSession(id string) (*DraftSession, error) {
 	return &clone, nil
 }
 
-// ApplyAction validates the requested action against the current session state
-// and advances the draft if possible.
+// ApplyAction — применяет действие игрока и, если нужно, вызывает бота.
 func (s *Store) ApplyAction(id string, actionType Phase, heroID int) (*DraftSession, error) {
 	if actionType != PhaseBan && actionType != PhasePick {
 		return nil, fmt.Errorf("unsupported action type %q", actionType)
@@ -91,6 +92,14 @@ func (s *Store) ApplyAction(id string, actionType Phase, heroID int) (*DraftSess
 	if err := session.ApplyAction(heroID); err != nil {
 		s.mu.Unlock()
 		return nil, err
+	}
+
+	// Когда очередь Dire — бот делает ход
+	if session.Side == "dire" && !session.Completed {
+		botHero := s.bot.ChooseHero(session)
+		if botHero > 0 {
+			_ = session.ApplyAction(botHero)
+		}
 	}
 
 	clone := session.Clone()

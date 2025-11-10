@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -31,6 +32,7 @@ func NewHandler(cfg RouterConfig) http.Handler {
 		writeJSON(w, http.StatusOK, heroes.All())
 	})
 
+	// ---- Сессии ----
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -41,7 +43,6 @@ func NewHandler(cfg RouterConfig) http.Handler {
 			Radiant string `json:"radiant"`
 			Dire    string `json:"dire"`
 		}
-
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payload"})
 			return
@@ -54,58 +55,50 @@ func NewHandler(cfg RouterConfig) http.Handler {
 
 		session, err := cfg.DraftStore.CreateSession(r.Context(), req.Radiant, req.Dire)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 
+		fmt.Printf("[DEBUG] Created session: %s\n", session.ID)
 		writeJSON(w, http.StatusCreated, session)
 	})
 
+	// ---- Сессия по ID и экшены ----
 	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
-		trimmed := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
-		if trimmed == "" {
+		path := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/sessions/"))
+		if path == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
 			return
 		}
 
-		if strings.HasSuffix(trimmed, "/") {
-			trimmed = strings.TrimSuffix(trimmed, "/")
-		}
-
-		parts := strings.Split(trimmed, "/")
-		id := parts[0]
+		// убираем лишний /
+		path = strings.TrimSuffix(path, "/")
+		parts := strings.Split(path, "/")
+		id := strings.TrimSpace(parts[0])
 		if id == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session id"})
 			return
 		}
 
-		if len(parts) == 1 {
-			if r.Method != http.MethodGet {
-				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-				return
-			}
+		fmt.Printf("[DEBUG] Request for session: %s\n", id)
 
+		// GET /api/sessions/{id}
+		if len(parts) == 1 && r.Method == http.MethodGet {
 			session, err := cfg.DraftStore.GetSession(id)
 			if err != nil {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 				return
 			}
-
 			writeJSON(w, http.StatusOK, session)
 			return
 		}
 
-		if len(parts) == 2 && parts[1] == "action" {
-			if r.Method != http.MethodPost {
-				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-				return
-			}
-
+		// POST /api/sessions/{id}/action
+		if len(parts) == 2 && parts[1] == "action" && r.Method == http.MethodPost {
 			var req struct {
 				Type   string `json:"type"`
 				HeroID int    `json:"heroId"`
 			}
-
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payload"})
 				return
@@ -122,7 +115,7 @@ func NewHandler(cfg RouterConfig) http.Handler {
 			return
 		}
 
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown resource"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown endpoint"})
 	})
 
 	return mux
