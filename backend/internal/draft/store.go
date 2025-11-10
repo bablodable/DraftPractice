@@ -2,11 +2,12 @@ package draft
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
+	"math/rand"
 	"time"
 
 	"github.com/example/draftpractice/internal/heroes"
@@ -26,23 +27,56 @@ func NewStore() *Store {
 }
 
 // CreateSession создаёт новую сессию и запускает таймер.
-func (s *Store) CreateSession(ctx context.Context, radiantName, direName string) (*DraftSession, error) {
+func (s *Store) CreateSession(
+	ctx context.Context,
+	radiantName, direName string,
+	firstPick Side,
+	botSide Side,
+	botSpeed string,
+) (*DraftSession, error) {
 	if len(heroes.All()) == 0 {
 		return nil, errors.New("hero cache is empty")
 	}
 
 	id := generateID()
-	session := newDraftSession(id, radiantName, direName)
+	session := newDraftSession(id, radiantName, direName, firstPick)
+	session.BotSide = botSide
+	session.BotSpeed = botSpeed
 
 	s.mu.Lock()
 	s.sessions[id] = session
 	s.mu.Unlock()
 
 	fmt.Printf("[SESSION] New draft %s started: %s vs %s\n", id, radiantName, direName)
-	fmt.Printf("[SESSION] First move: %s %s (timer %d sec)\n", session.Side, session.Stage, session.CurrentTimer)
+	fmt.Printf("[SESSION] Bot: %s (%s)\n", botSide, botSpeed)
+	fmt.Printf("[SESSION] First move: %s %s (timer %d sec)\n",
+		session.Side, session.Stage, session.CurrentTimer)
 
 	// Запускаем фонового тикера для этой сессии.
 	go s.runTimer(session)
+
+	// Если первый пик принадлежит боту — он начинает сам
+	if session.FirstPick == session.BotSide {
+		go func() {
+			delay := botThinkDelay(botSpeed)
+			fmt.Printf("[BOT] starting draft: %s (%s) thinking for %v...\n",
+				session.BotSide, botSpeed, delay)
+			time.Sleep(delay)
+
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			if session.Completed {
+				return
+			}
+
+			hero := randomAvailableHero(session)
+			_ = session.ApplyAction(hero)
+			fmt.Printf("[BOT] %s starts with hero %d\n", session.BotSide, hero)
+			fmt.Printf("[NEXT] Now %s %s (timer %d sec)\n",
+				session.Side, session.Stage, session.CurrentTimer)
+		}()
+	}
 
 	return session.ClonePtr(), nil
 }
@@ -97,6 +131,71 @@ func (s *Store) runTimer(session *DraftSession) {
 	}
 }
 
+// ApplyAction — применяет действие игрока и двигает сессию.
+// Если следующий ход принадлежит боту, запускает ThinkAndAct.
+func (s *Store) ApplyAction(id string, actionType Phase, heroID int) (*DraftSession, error) {
+	if actionType != PhaseBan && actionType != PhasePick {
+		return nil, fmt.Errorf("unsupported action type %q", actionType)
+	}
+
+	s.mu.Lock()
+	session, ok := s.sessions[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, errors.New("session not found")
+	}
+
+	if session.Completed {
+		s.mu.Unlock()
+		return nil, errors.New("draft is already completed")
+	}
+
+	if session.Stage != actionType {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("expected %s action but got %s", session.Stage, actionType)
+	}
+
+	if err := session.ApplyAction(heroID); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+
+	fmt.Printf("[ACTION] %s %s hero %d\n", session.Side, session.Stage, heroID)
+	fmt.Printf("[NEXT] Now %s %s (timer %d sec)\n",
+		session.Side, session.Stage, session.CurrentTimer)
+
+	nextSide := session.Side
+	nextPhase := session.Stage
+	botSpeed := session.BotSpeed
+	sessionCopy := session.Clone()
+	s.mu.Unlock()
+
+	// Проверяем, ход ли теперь бота
+	if session.BotSide == nextSide {
+		go func() {
+			delay := botThinkDelay(botSpeed)
+			fmt.Printf("[BOT] %s bot (%s) thinking for %v...\n", nextSide, botSpeed, delay)
+			time.Sleep(delay)
+
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			sess, ok := s.sessions[id]
+			if !ok || sess.Completed {
+				return
+			}
+
+			hero := randomAvailableHero(sess)
+			_ = sess.ApplyAction(hero)
+			fmt.Printf("[BOT] %s auto-%s hero %d after %v\n", nextSide, nextPhase, hero, delay)
+			fmt.Printf("[NEXT] Now %s %s (timer %d sec)\n",
+				sess.Side, sess.Stage, sess.CurrentTimer)
+		}()
+	}
+
+	return &sessionCopy, nil
+}
+
 func randomAvailableHero(s *DraftSession) int {
 	for _, h := range heroes.All() {
 		if !s.IsHeroUsed(h.ID) {
@@ -104,6 +203,18 @@ func randomAvailableHero(s *DraftSession) int {
 		}
 	}
 	return 1 // fallback
+}
+
+// botThinkDelay возвращает задержку в зависимости от скорости бота.
+func botThinkDelay(speed string) time.Duration {
+	switch speed {
+	case "fast":
+		return time.Duration(1+rand.Intn(3)) * time.Second // 1–3 сек
+	case "slow":
+		return time.Duration(7+rand.Intn(6)) * time.Second // 7–12 сек
+	default:
+		return time.Duration(3+rand.Intn(5)) * time.Second // 3–7 сек
+	}
 }
 
 // GetSession возвращает состояние сессии.
@@ -119,39 +230,6 @@ func (s *Store) GetSession(id string) (*DraftSession, error) {
 	return &clone, nil
 }
 
-// ApplyAction — применяет действие и двигает сессию.
-func (s *Store) ApplyAction(id string, actionType Phase, heroID int) (*DraftSession, error) {
-	if actionType != PhaseBan && actionType != PhasePick {
-		return nil, fmt.Errorf("unsupported action type %q", actionType)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	session, ok := s.sessions[id]
-	if !ok {
-		return nil, errors.New("session not found")
-	}
-
-	if session.Completed {
-		return nil, errors.New("draft is already completed")
-	}
-
-	if session.Stage != actionType {
-		return nil, fmt.Errorf("expected %s action but got %s", session.Stage, actionType)
-	}
-
-	if err := session.ApplyAction(heroID); err != nil {
-		return nil, err
-	}
-
-	fmt.Printf("[ACTION] %s %s hero %d\n", session.Side, session.Stage, heroID)
-	fmt.Printf("[NEXT] Now %s %s (timer %d sec)\n",
-		session.Side, session.Stage, session.CurrentTimer)
-
-	return session.ClonePtr(), nil
-}
-
 // ClonePtr — удобный способ вернуть указатель на клон.
 func (s *DraftSession) ClonePtr() *DraftSession {
 	clone := s.Clone()
@@ -160,7 +238,7 @@ func (s *DraftSession) ClonePtr() *DraftSession {
 
 func generateID() string {
 	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := crand.Read(buf); err != nil {
 		return hex.EncodeToString([]byte(fmt.Sprint(time.Now().UnixNano())))
 	}
 	return hex.EncodeToString(buf)

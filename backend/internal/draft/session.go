@@ -33,19 +33,27 @@ type DraftSession struct {
 	ReserveRadiant int
 	ReserveDire    int
 	taken          map[int]struct{}
+
+	// Кто получил первый пик
+	FirstPick Side `json:"firstPick"`
+	// Скорость бота
+	BotSpeed string `json:"botSpeed"`
+	// Какая сторона управляется ботом (radiant или dire)
+	BotSide Side `json:"botSide"`
 }
 
 // newDraftSession — инициализация новой сессии.
-func newDraftSession(id, radiantName, direName string) *DraftSession {
+func newDraftSession(id, radiantName, direName string, firstPick Side) *DraftSession {
 	s := &DraftSession{
 		ID:             id,
 		Radiant:        Team{Name: radiantName},
 		Dire:           Team{Name: direName},
-		Order:          schedule(SideRadiant), // допустим Radiant имеет первый пик
+		Order:          schedule(firstPick),
 		Step:           0,
 		ReserveRadiant: ReserveTimeSeconds,
 		ReserveDire:    ReserveTimeSeconds,
 		taken:          make(map[int]struct{}),
+		FirstPick:      firstPick,
 	}
 
 	s.Stage = s.Order[0].Phase
@@ -140,6 +148,7 @@ func (s *DraftSession) Clone() DraftSession {
 		CurrentTimer:   s.CurrentTimer,
 		ReserveRadiant: s.ReserveRadiant,
 		ReserveDire:    s.ReserveDire,
+		FirstPick:      s.FirstPick,
 		taken:          make(map[int]struct{}, len(s.taken)),
 	}
 	for heroID := range s.taken {
